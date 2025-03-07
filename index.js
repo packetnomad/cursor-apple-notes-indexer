@@ -1,22 +1,18 @@
 const path = require('path');
 const fs = require('fs');
-const lunr = require('lunr');
 const jxa = require('node-jxa');
-const Datastore = require('nedb');
 const { app } = require('electron');
 
-// Database setup
-const dbDir = path.join(app.getPath('userData'), 'apple-notes-indexer');
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
-}
+// Import custom modules
+const ui = require('./ui');
+const { createEnhancedSearchIndex, parseQuery } = require('./search');
+const { NotesDatabase, IndexMetadata } = require('./storage');
 
-const db = new Datastore({
-  filename: path.join(dbDir, 'notes.db'),
-  autoload: true
-});
+// Initialize databases
+const notesDb = new NotesDatabase();
+const metadataDb = new IndexMetadata();
 
-// Initialize the search index
+// Global state
 let searchIndex;
 let notesCache = [];
 
@@ -61,6 +57,7 @@ async function fetchAppleNotes() {
 // Function to build the index
 async function buildIndex(progressCallback = () => {}) {
   try {
+    // Fetch all notes from Apple Notes
     const notes = await fetchAppleNotes();
     
     // Store notes in the database, updating existing ones
@@ -74,33 +71,22 @@ async function buildIndex(progressCallback = () => {}) {
         note: note.name
       });
       
-      // Update in database
-      await new Promise((resolve, reject) => {
-        db.update(
-          { id: note.id },
-          note,
-          { upsert: true },
-          (err) => {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
+      // Save to database
+      await notesDb.saveNote(note);
     }
     
     // Create the search index
-    searchIndex = lunr(function() {
-      this.field('name', { boost: 10 });
-      this.field('body');
-      this.field('folder');
-      this.ref('id');
-      
-      notes.forEach(function(note) {
-        this.add(note);
-      }, this);
-    });
+    searchIndex = createEnhancedSearchIndex(notes);
     
+    // Cache notes for quick access
     notesCache = notes;
+    
+    // Update metadata
+    await metadataDb.saveMetadata({
+      lastIndexed: new Date().toISOString(),
+      noteCount: notes.length,
+      indexed: true
+    });
     
     return {
       indexed: notes.length,
@@ -113,39 +99,77 @@ async function buildIndex(progressCallback = () => {}) {
 }
 
 // Function to search notes
-function searchNotes(query) {
+async function searchNotes(queryString) {
   if (!searchIndex) {
-    throw new Error('Index not built yet. Please run the indexNotes command first.');
+    // Try to load the index if it exists
+    await loadIndexFromStorage();
+    
+    if (!searchIndex) {
+      throw new Error('Index not built yet. Please run the indexNotes command first.');
+    }
   }
   
-  const results = searchIndex.search(query);
+  // Parse the query
+  const parsedQuery = parseQuery(queryString);
   
-  // Get the full notes from our cache
-  return results.map(result => {
-    const note = notesCache.find(n => n.id === result.ref);
-    return {
-      ...note,
-      score: result.score
-    };
+  // Execute the search with advanced options
+  const results = searchIndex.advancedSearch({
+    query: parsedQuery.query,
+    folder: parsedQuery.folder,
+    dateRange: parsedQuery.dateRange,
+    sortBy: parsedQuery.sortBy
   });
+  
+  return results;
+}
+
+// Load index from storage
+async function loadIndexFromStorage() {
+  try {
+    // Get metadata
+    const metadata = await metadataDb.getMetadata();
+    
+    // If we have an index, load the notes
+    if (metadata.indexed) {
+      const notes = await notesDb.getAllNotes();
+      
+      if (notes.length > 0) {
+        // Create search index
+        searchIndex = createEnhancedSearchIndex(notes);
+        notesCache = notes;
+        return true;
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Error loading index:', error);
+    return false;
+  }
 }
 
 // Function to get index stats
-function getIndexStats() {
-  return new Promise((resolve, reject) => {
-    db.count({}, (err, count) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      
-      resolve({
-        totalNotes: count,
-        indexed: notesCache.length,
-        isIndexed: !!searchIndex
-      });
-    });
-  });
+async function getIndexStats() {
+  try {
+    // Try to load index if not loaded
+    if (!searchIndex) {
+      await loadIndexFromStorage();
+    }
+    
+    // Get metadata
+    const metadata = await metadataDb.getMetadata();
+    const noteCount = await notesDb.countNotes();
+    
+    return {
+      totalNotes: noteCount,
+      indexed: notesCache.length,
+      isIndexed: !!searchIndex,
+      lastIndexed: metadata.lastIndexed
+    };
+  } catch (error) {
+    console.error('Error getting index stats:', error);
+    throw error;
+  }
 }
 
 // MCP command functions
@@ -160,29 +184,50 @@ async function indexNotesCommand() {
     console.log(`Indexing complete! Indexed ${result.indexed} notes.`);
     console.log(`Last updated: ${result.lastUpdated}`);
     
-    return { success: true, ...result };
+    return { 
+      success: true, 
+      ...result,
+      html: ui.createIndexStatusPage({
+        totalNotes: result.indexed,
+        indexed: result.indexed,
+        isIndexed: true
+      })
+    };
   } catch (error) {
     console.error('Failed to index notes:', error);
-    return { success: false, error: error.message };
+    return { 
+      success: false, 
+      error: error.message,
+      html: `<div style="color: red; padding: 10px;">Error: ${error.message}</div>`
+    };
   }
 }
 
 async function searchNotesCommand(query) {
   try {
     if (!query) {
-      return { success: false, error: 'Please provide a search query' };
+      return { 
+        success: false, 
+        error: 'Please provide a search query',
+        html: '<div style="padding: 10px;">Please provide a search query</div>'
+      };
     }
     
-    const results = searchNotes(query);
+    const results = await searchNotes(query);
     
     return {
       success: true,
       results,
-      count: results.length
+      count: results.length,
+      html: ui.createSearchResultsPage(results, query)
     };
   } catch (error) {
     console.error('Search failed:', error);
-    return { success: false, error: error.message };
+    return { 
+      success: false, 
+      error: error.message,
+      html: `<div style="color: red; padding: 10px;">Error: ${error.message}</div>`
+    };
   }
 }
 
@@ -192,13 +237,28 @@ async function viewIndexCommand() {
     
     return {
       success: true,
-      ...stats
+      ...stats,
+      html: ui.createIndexStatusPage(stats)
     };
   } catch (error) {
     console.error('Failed to get index stats:', error);
-    return { success: false, error: error.message };
+    return { 
+      success: false, 
+      error: error.message,
+      html: `<div style="color: red; padding: 10px;">Error: ${error.message}</div>`
+    };
   }
 }
+
+// Initialize on load
+(async () => {
+  try {
+    await loadIndexFromStorage();
+    console.log('Apple Notes Indexer initialized');
+  } catch (error) {
+    console.error('Error initializing Apple Notes Indexer:', error);
+  }
+})();
 
 // Export MCP command handlers
 module.exports = {
