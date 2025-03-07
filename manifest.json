@@ -1,0 +1,28 @@
+{
+  "name": "Apple Notes Indexer",
+  "description": "Search and index your Apple Notes locally",
+  "version": "0.1.0",
+  "main": "index.js",
+  "commands": [
+    {
+      "name": "indexNotes",
+      "description": "Index your Apple Notes",
+      "mode": "terminal"
+    },
+    {
+      "name": "searchNotes",
+      "description": "Search through your indexed notes",
+      "mode": "menu"
+    },
+    {
+      "name": "viewIndex",
+      "description": "View the current index status",
+      "mode": "menu"
+    }
+  ],
+  "activationEvents": [
+    "onCommand:appleNotesIndexer.indexNotes",
+    "onCommand:appleNotesIndexer.searchNotes",
+    "onCommand:appleNotesIndexer.viewIndex"
+  ]
+}
