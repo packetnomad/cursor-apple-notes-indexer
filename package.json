@@ -1,0 +1,24 @@
+{
+  "name": "cursor-apple-notes-indexer",
+  "version": "0.1.0",
+  "description": "An MCP app for Cursor that searches and indexes Apple Notes locally",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "cursor",
+    "mcp",
+    "apple-notes",
+    "indexer",
+    "search"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "lunr": "^2.3.9",
+    "node-jxa": "^2.0.4",
+    "nedb": "^1.8.0",
+    "electron": "^28.1.0"
+  }
+}
